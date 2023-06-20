@@ -905,6 +905,7 @@ module {module}
    function {subroutine}({argument_list}) result(ierr)
 
       {module_use}
+      use omp_lib
 
       implicit none
 
@@ -912,6 +913,19 @@ module {module}
       integer :: ierr
 
       {var_defs}
+      integer :: rank,ier,nthr,nsplit
+      integer,save :: threadid,nbs,nbe,ibs
+!$omp ThreadPrivate(threadid,nbs,nbe,ibs)
+      call omp_set_dynamic(.false.)
+!$omp parallel default(none), private(nthr,nsplit), shared(GFS_Data,GFS_Control)
+      nthr = omp_get_num_threads()
+      nsplit = GFS_Control%nblks/nthr
+      threadid = omp_get_thread_num()
+      nbs = (nsplit*threadid) + 1
+      ibs = sum(GFS_Control%blksz(1:(nbs-1)))+1
+      nbe = nsplit*(threadid+1)
+      if(threadid == nthr-1) nbe = GFS_Control%nblks
+!$omp end parallel
 
       ierr = 0
 
@@ -1387,11 +1401,13 @@ end module {module}
                                 # Define actions before. Always copy data in, independent of intent.
                                 actions_in = '''        ! Allocate local variable to copy blocked data {var} into a contiguous array
         allocate({tmpvar}({dims}))
-        ib = 1
-        do nb=1,{block_count}
+!$omp parallel default(none), private(ib,nb), shared(GFS_Data,GFS_Control,{tmpvar})
+        ib = ibs
+        do nb=nbs,nbe
           {tmpvar}({dimpad_before}ib:ib+{block_size}-1{dimpad_after}) = {var}
           ib = ib+{block_size}
         end do
+!$omp end parallel
 '''.format(tmpvar=tmpvar.local_name,
            block_count=metadata_define[CCPP_BLOCK_COUNT][0].local_name.replace(CCPP_INTERNAL_VARIABLES[CCPP_BLOCK_NUMBER],'nb'),
            block_size=metadata_define[CCPP_HORIZONTAL_LOOP_EXTENT][0].local_name.replace(CCPP_INTERNAL_VARIABLES[CCPP_BLOCK_NUMBER],'nb'),
@@ -1402,11 +1418,14 @@ end module {module}
            )
                                 # Define actions after, depending on intent.
                                 if var.intent in [ 'inout', 'out' ]:
-                                    actions_out = '''        ib = 1
-        do nb=1,{block_count}
+                                    actions_out = '''        
+!$omp parallel default(none), private(ib,nb), shared(GFS_Data,GFS_Control,{tmpvar})
+        ib = ibs
+        do nb=nbs,nbe
           {var} = {tmpvar}({dimpad_before}ib:ib+{block_size}-1{dimpad_after})
           ib = ib+{block_size}
         end do
+!$omp end parallel
         deallocate({tmpvar})
 '''.format(tmpvar=tmpvar.local_name,
            block_count=metadata_define[CCPP_BLOCK_COUNT][0].local_name.replace(CCPP_INTERNAL_VARIABLES[CCPP_BLOCK_NUMBER],'nb'),
